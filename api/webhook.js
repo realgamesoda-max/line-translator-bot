@@ -3,12 +3,37 @@ export default async function handler(req, res) {
 
   try {
     const events = req.body.events || [];
+
     for (const event of events) {
       if (event.type === 'message' && event.message.type === 'text') {
         const userMessage = event.message.text;
         const replyToken = event.replyToken;
+        const source = event.source;
 
-        // Gemini 3.6 Flash 호출
+        // 1. 메시지 보낸 사람 이름(프로필) 가져오기
+        let senderName = '';
+        try {
+          let profileUrl = `https://api.line.me/v2/bot/profile/${source.userId}`;
+          if (source.type === 'group') {
+            profileUrl = `https://api.line.me/v2/bot/group/${source.groupId}/member/${source.userId}`;
+          } else if (source.type === 'room') {
+            profileUrl = `https://api.line.me/v2/bot/room/${source.roomId}/member/${source.userId}`;
+          }
+
+          const profileRes = await fetch(profileUrl, {
+            headers: {
+              'Authorization': `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}`
+            }
+          });
+          const profileData = await profileRes.json();
+          if (profileData.displayName) {
+            senderName = profileData.displayName;
+          }
+        } catch (e) {
+          console.error('Failed to fetch profile:', e);
+        }
+
+        // 2. Gemini 3.6 Flash 번역 호출
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
           {
@@ -31,7 +56,12 @@ export default async function handler(req, res) {
         const geminiData = await geminiRes.json();
         const translatedText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
+        // 3. [보낸사람 이름] + 번역문 조합하여 라인 전송
         if (translatedText.trim()) {
+          const finalMessage = senderName 
+            ? `[${senderName}]\n${translatedText.trim()}`
+            : translatedText.trim();
+
           await fetch('https://api.line.me/v2/bot/message/reply', {
             method: 'POST',
             headers: {
@@ -40,7 +70,7 @@ export default async function handler(req, res) {
             },
             body: JSON.stringify({
               replyToken: replyToken,
-              messages: [{ type: 'text', text: translatedText.trim() }]
+              messages: [{ type: 'text', text: finalMessage }]
             })
           });
         }
